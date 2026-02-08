@@ -22,16 +22,16 @@ cd FM_extraction
 uv sync
 ```
 
-Place model weights at `FM_extraction/model/model_weights.torch`.
+Place model weights at `FM_extraction/fm_extraction/model/model_weights.torch`.
 ```bash
-cd FM_extraction/model
+cd FM_extraction/fm_extraction/model
 wget -O model_weights.torch "https://zenodo.org/records/10528450/files/model_weights.torch?download=1"
 ```
 
 ### Usage
 
 ```bash
-uv run python extract_features.py --input_dir /path/to/data
+uv run python -m fm_extraction.extract_features --input_dir /path/to/data
 ```
 
 ## PyRadiomics Extraction

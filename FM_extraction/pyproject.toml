@@ -7,7 +7,7 @@ dependencies = [
     "numpy",
     "scipy",
     "SimpleITK",
-    "fmcib",
+    "foundation-cancer-image-biomarker",
 ]
 
 [build-system]

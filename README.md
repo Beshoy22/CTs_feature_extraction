@@ -23,6 +23,10 @@ uv sync
 ```
 
 Place model weights at `FM_extraction/model/model_weights.torch`.
+```bash
+cd FM_extraction/model
+wget -O model_weights.torch "https://zenodo.org/records/10528450/files/model_weights.torch?download=1"
+```
 
 ### Usage
 

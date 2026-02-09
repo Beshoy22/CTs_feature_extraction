@@ -5,8 +5,8 @@ Two standalone scripts for extracting features from CT segmentation data in NRRD
 ## Structure
 
 ```
-FM_extraction/          # NMI foundation model features
-radiomics_extraction/   # PyRadiomics features
+foundation_model/   # NMI foundation model features
+PyRadiomics/        # PyRadiomics features
 ```
 
 Each folder has its own uv environment.
@@ -18,13 +18,13 @@ Finds the centroid of the largest lesion in the segmentation, then extracts feat
 ### Setup
 
 ```bash
-cd FM_extraction
+cd foundation_model
 uv sync
 ```
 
-Place model weights at `FM_extraction/fm_extraction/model/model_weights.torch`.
+Place model weights at `foundation_model/fm_extraction/model/model_weights.torch`.
 ```bash
-cd FM_extraction/fm_extraction/model
+cd foundation_model/fm_extraction/model
 wget -O model_weights.torch "https://zenodo.org/records/10528450/files/model_weights.torch?download=1"
 ```
 
@@ -41,14 +41,14 @@ Extracts radiomics features with image normalization (outlier removal) and resam
 ### Setup
 
 ```bash
-cd radiomics_extraction
+cd PyRadiomics
 uv sync
 ```
 
 ### Usage
 
 ```bash
-uv run python -m radiomics_extraction_pkg.extract_features --input_dir /path/to/data
+uv run python -m rad_extraction.extract_features --input_dir /path/to/data
 ```
 
 ## Common Options

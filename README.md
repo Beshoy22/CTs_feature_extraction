@@ -48,7 +48,7 @@ uv sync
 ### Usage
 
 ```bash
-uv run python extract_features.py --input_dir /path/to/data
+uv run python -m radiomics_extraction_pkg.extract_features --input_dir /path/to/data
 ```
 
 ## Common Options

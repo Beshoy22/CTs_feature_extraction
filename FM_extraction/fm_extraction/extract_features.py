@@ -52,7 +52,7 @@ def main():
     with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
         temp_csv = f.name
         pd.DataFrame([{
-            "nii_path": image_path,
+            "image_path": image_path,
             "coordX": centroid_x,
             "coordY": centroid_y,
             "coordZ": centroid_z,

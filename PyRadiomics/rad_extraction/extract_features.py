@@ -1,19 +1,36 @@
+"""
+Extract the 128 selected radiomic features from a CT volume and segmentation mask.
+
+Replicates the VANILLA (non-perturbed) extraction path of
+I3LUNG_march_2025_multi_thread.py exactly:
+
+    extract_features_non_perturbed(patient):
+        volume_path = os.path.normpath(patient['image_path'])
+        mask_path   = os.path.normpath(patient['seg_path'])
+        radiomics_features = extract_features(volume_path, mask_path, patient['Subject'])
+
+That function passes the ORIGINAL file paths directly to pyradiomics.
+No crop, no interpolation, no GetImageFromArray.
+"""
+
 import os
 import argparse
-import tempfile
 import SimpleITK as sitk
 import numpy as np
 import pandas as pd
 from radiomics import featureextractor
 
-from .utils.imageReaders import read_itk_image, read_itk_segmentation
-from .utils.imageProcess import (
-    crop_image,
-    interpolate_image,
-    interpolate_roi,
-    combine_all_rois,
-)
-from .utils.importSettings import Settings
+# ---------------------------------------------------------------------------
+# Match the global side-effect from the I3LUNG import chain:
+#
+#   I3LUNG_march_2025_multi_thread.py
+#     -> from utils.i3lungRadiomics import extract_features
+#       -> from utils.imageReaders import ...
+#         -> sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(4)
+#
+# This fires BEFORE any pyradiomics call in the I3LUNG code.
+# ---------------------------------------------------------------------------
+sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(4)
 
 # ---------------------------------------------------------------------------
 # 128 desired radiomic features
@@ -150,73 +167,93 @@ DESIRED_FEATURES = [
 ]
 
 
-def extract_features(image, segmentation, pid):
+def diagnose_inputs(image_path, seg_path):
     """
-    Identical to utils.i3lungRadiomics.extract_features.
+    Print everything pyradiomics will see when it reads these files.
+    This helps identify mismatches vs the I3LUNG extraction.
+    """
+    print("\n" + "=" * 70)
+    print("DIAGNOSTICS — what pyradiomics will see")
+    print("=" * 70)
+
+    img = sitk.ReadImage(image_path)
+    seg = sitk.ReadImage(seg_path)
+
+    seg_array = sitk.GetArrayFromImage(seg)
+    unique_labels = np.unique(seg_array)
+
+    print(f"\n  IMAGE: {image_path}")
+    print(f"    Size    : {img.GetSize()}")
+    print(f"    Spacing : {img.GetSpacing()}")
+    print(f"    Origin  : {img.GetOrigin()}")
+    print(f"    PixelID : {img.GetPixelIDTypeAsString()}")
+    print(f"    Dtype   : {sitk.GetArrayFromImage(img).dtype}")
+
+    print(f"\n  MASK: {seg_path}")
+    print(f"    Size    : {seg.GetSize()}")
+    print(f"    Spacing : {seg.GetSpacing()}")
+    print(f"    Origin  : {seg.GetOrigin()}")
+    print(f"    PixelID : {seg.GetPixelIDTypeAsString()}")
+    print(f"    Dtype   : {seg_array.dtype}")
+    print(f"    Unique label values : {unique_labels}")
+    print(f"    Total non-zero voxels: {np.count_nonzero(seg_array)}")
+
+    # Check what pyradiomics will actually use (default label=1)
+    label1_count = np.sum(seg_array == 1)
+    print(f"\n    Voxels with label=1 : {label1_count}")
+
+    if label1_count == 0:
+        print(f"\n    *** WARNING: NO VOXELS WITH LABEL=1 ***")
+        print(f"    *** Pyradiomics default label is 1.")
+        print(f"    *** Your mask has labels: {unique_labels[unique_labels != 0]}")
+        print(f"    *** This WILL produce wrong features!")
+        print(f"    *** You likely need: --label {unique_labels[unique_labels != 0][0]}")
+
+    # Check size/spacing match
+    if img.GetSize() != seg.GetSize():
+        print(f"\n    *** WARNING: IMAGE AND MASK SIZE MISMATCH ***")
+        print(f"    *** Image: {img.GetSize()}, Mask: {seg.GetSize()}")
+
+    img_spacing_rounded = tuple(round(s, 4) for s in img.GetSpacing())
+    seg_spacing_rounded = tuple(round(s, 4) for s in seg.GetSpacing())
+    if img_spacing_rounded != seg_spacing_rounded:
+        print(f"\n    *** WARNING: IMAGE AND MASK SPACING MISMATCH ***")
+        print(f"    *** Image: {img.GetSpacing()}, Mask: {seg.GetSpacing()}")
+
+    # Voxel volume — this is what makes TotalEnergy != Energy
+    voxel_vol = float(np.prod(img.GetSpacing()))
+    print(f"\n    Voxel volume (spacing product): {voxel_vol}")
+    print(f"    If this is 1.0, Energy == TotalEnergy")
+
+    print("=" * 70 + "\n")
+
+    return unique_labels
+
+
+def extract_features(image, segmentation, pid, label=1):
+    """
+    Identical to utils.i3lungRadiomics.extract_features,
+    except allows overriding the mask label.
     """
     extractor = featureextractor.RadiomicsFeatureExtractor()
     extractor.enableAllImageTypes()
     extractor.enableAllFeatures()
+
+    # Match pyradiomics default, but allow override for non-standard masks
+    if label != 1:
+        extractor.settings["label"] = label
 
     features = extractor.execute(image, segmentation)
     features["patient_id"] = pid
     return features
 
 
-def get_preprocessed_scan(image_path, seg_path):
-    """
-    Run the EXACT same preprocessing as get_perturbated_scans() in
-    i3lungRadiomics.py, but STOP before randomise_roi_contours.
-
-    Pipeline:
-        1. read_itk_image  +  read_itk_segmentation
-        2. crop_image  (boundary=50.0, z_only=True)
-        3. interpolate_image  +  interpolate_roi
-        4. combine_all_rois
-
-    Returns:
-        image_class_object : ImageClass - preprocessed CT volume
-        roi_combined       : RoiClass   - combined (non-perturbed) mask
-    """
-    settings = Settings()
-
-    # ---- Read ----
-    ctscan_obj = read_itk_image(image_path, "CT")
-    seg_obj = read_itk_segmentation(seg_path)
-
-    # ---- Crop (boundary=50 mm, z-only) ----
-    image_class_object, roi_class_object_list = crop_image(
-        img_obj=ctscan_obj,
-        roi_list=seg_obj,
-        boundary=50.0,
-        z_only=True,
-    )
-
-    # ---- Interpolate to isotropic spacing (default 1.25 mm) ----
-    image_class_object = interpolate_image(
-        img_obj=image_class_object, settings=settings
-    )
-    roi_class_object_list = interpolate_roi(
-        img_obj=image_class_object,
-        roi_list=roi_class_object_list,
-        settings=settings,
-    )
-
-    # ---- Combine ROIs ----
-    roi_combined = combine_all_rois(
-        roi_list=roi_class_object_list, settings=settings
-    )
-
-    return image_class_object, roi_combined
-
-
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Extract the 128 selected radiomic features from a CT volume "
-            "and segmentation mask.  Follows the exact same preprocessing "
-            "pipeline as the I3LUNG perturbation code (crop -> interpolate -> "
-            "combine ROIs) but without contour randomisation."
+            "Extract the 128 selected radiomic features. "
+            "Matches I3LUNG vanilla path exactly: passes original files "
+            "directly to pyradiomics with no preprocessing."
         ),
     )
     parser.add_argument("--input_dir", default=".")
@@ -224,12 +261,17 @@ def main():
     parser.add_argument("--seg", default="mask.seg.nrrd")
     parser.add_argument("--output_dir", default=None)
     parser.add_argument(
+        "--label", type=int, default=None,
+        help=(
+            "Mask label value to use. Default: auto-detect if mask has "
+            "exactly one non-zero label, otherwise 1 (pyradiomics default). "
+            "Use this if your mask uses e.g. 255 instead of 1."
+        ),
+    )
+    parser.add_argument(
         "--troubleshoot",
         action="store_true",
-        help=(
-            "Save the cropped + interpolated volume and mask to "
-            "<output_dir>/troubleshoot/ for visual inspection."
-        ),
+        help="Print detailed diagnostics about inputs before extracting.",
     )
     args = parser.parse_args()
 
@@ -240,72 +282,71 @@ def main():
     seg_path = os.path.abspath(os.path.join(args.input_dir, args.seg))
 
     # ------------------------------------------------------------------
-    # Preprocessing — same pipeline as get_perturbated_scans()
+    # Always show basic info; --troubleshoot shows full diagnostics
     # ------------------------------------------------------------------
-    print(f"Preprocessing:\n  image: {image_path}\n  seg  : {seg_path}")
-    image_class_object, roi_combined = get_preprocessed_scan(image_path, seg_path)
+    print(f"Image: {image_path}")
+    print(f"Seg  : {seg_path}")
 
-    # ------------------------------------------------------------------
-    # Convert to SimpleITK the EXACT same way as save_pertrubated_scan_mask:
-    #
-    #     ctscan_img = sitk.GetImageFromArray(ctscan.voxel_grid)
-    #     mask_img   = sitk.GetImageFromArray(mask.roi.voxel_grid)
-    #
-    # This deliberately drops spacing/origin — pyradiomics will see
-    # default (1,1,1) spacing, which is what the perturbed path uses.
-    # ------------------------------------------------------------------
-    ctscan_img = sitk.GetImageFromArray(image_class_object.voxel_grid)
-    mask_img = sitk.GetImageFromArray(roi_combined.roi.voxel_grid)
-
-    # ------------------------------------------------------------------
-    # Save to temp files (same as save_pertrubated_scan_mask writes .nrrd)
-    # ------------------------------------------------------------------
-    tmp_dir = tempfile.mkdtemp()
-    volume_path = os.path.join(tmp_dir, "volume.nrrd")
-    mask_path = os.path.join(tmp_dir, "mask.nrrd")
-
-    sitk.WriteImage(ctscan_img, volume_path)
-    sitk.WriteImage(mask_img, mask_path)
-
-    # ------------------------------------------------------------------
-    # Troubleshoot — save copies for inspection
-    # ------------------------------------------------------------------
     if args.troubleshoot:
-        ts_dir = os.path.join(output_dir, "troubleshoot")
-        os.makedirs(ts_dir, exist_ok=True)
-
-        # Files exactly as pyradiomics sees them (no spacing/origin)
-        sitk.WriteImage(ctscan_img, os.path.join(ts_dir, "volume_no_metadata.nrrd"))
-        sitk.WriteImage(mask_img, os.path.join(ts_dir, "mask_no_metadata.nrrd"))
-
-        # With real spacing/origin so you can overlay in a viewer
-        ctscan_img_meta = sitk.GetImageFromArray(image_class_object.voxel_grid)
-        ctscan_img_meta.SetSpacing(image_class_object.spacing[::-1].tolist())
-        ctscan_img_meta.SetOrigin(image_class_object.origin[::-1].tolist())
-
-        mask_array = roi_combined.roi.voxel_grid.astype(np.uint8)
-        mask_img_meta = sitk.GetImageFromArray(mask_array)
-        mask_img_meta.SetSpacing(image_class_object.spacing[::-1].tolist())
-        mask_img_meta.SetOrigin(image_class_object.origin[::-1].tolist())
-
-        sitk.WriteImage(ctscan_img_meta, os.path.join(ts_dir, "preprocessed_volume.nrrd"))
-        sitk.WriteImage(mask_img_meta, os.path.join(ts_dir, "preprocessed_mask.nrrd"))
-
-        print(f"[TROUBLESHOOT] Volume shape  : {image_class_object.voxel_grid.shape}")
-        print(f"[TROUBLESHOOT] Volume spacing : {image_class_object.spacing}")
-        print(f"[TROUBLESHOOT] Mask sum       : {mask_array.sum()}")
-        print(f"[TROUBLESHOOT] Saved to       : {ts_dir}")
+        unique_labels = diagnose_inputs(image_path, seg_path)
+    else:
+        # Quick label check even without troubleshoot
+        seg = sitk.ReadImage(seg_path)
+        seg_array = sitk.GetArrayFromImage(seg)
+        unique_labels = np.unique(seg_array)
 
     # ------------------------------------------------------------------
-    # Feature extraction — same as extract_features in the perturbed path
+    # Determine mask label
     # ------------------------------------------------------------------
-    print("Extracting features ...")
-    all_features = extract_features(volume_path, mask_path, pid="subject")
+    non_zero_labels = unique_labels[unique_labels != 0]
 
-    # Clean up temp files
-    os.remove(volume_path)
-    os.remove(mask_path)
-    os.rmdir(tmp_dir)
+    if args.label is not None:
+        label = args.label
+        print(f"Using user-specified label: {label}")
+    elif len(non_zero_labels) == 1 and non_zero_labels[0] != 1:
+        # Auto-detect: mask has exactly one non-zero label and it's not 1
+        label = int(non_zero_labels[0])
+        print(f"Auto-detected mask label: {label} (not the default 1!)")
+    else:
+        label = 1
+        if 1 not in non_zero_labels:
+            print(
+                f"\n*** CRITICAL: mask has no label=1 voxels! "
+                f"Labels found: {non_zero_labels}. "
+                f"Use --label {int(non_zero_labels[0])} ***\n"
+            )
+
+    # ------------------------------------------------------------------
+    # Feature extraction — identical to I3LUNG vanilla path:
+    #
+    #   extract_features_non_perturbed:
+    #       volume_path = os.path.normpath(patient['image_path'])
+    #       mask_path = os.path.normpath(patient['seg_path'])
+    #       extract_features(volume_path, mask_path, patient['Subject'])
+    #
+    # Passes ORIGINAL file paths directly to pyradiomics.
+    # No crop, no interpolation, no GetImageFromArray.
+    # ------------------------------------------------------------------
+    print(f"Extracting features (label={label}) ...")
+    all_features = extract_features(
+        os.path.normpath(image_path),
+        os.path.normpath(seg_path),
+        pid="subject",
+        label=label,
+    )
+
+    # ------------------------------------------------------------------
+    # Quick sanity check
+    # ------------------------------------------------------------------
+    energy = all_features.get("original_firstorder_Energy")
+    total_energy = all_features.get("original_firstorder_TotalEnergy")
+    if energy is not None and total_energy is not None:
+        if energy == total_energy:
+            print("\n*** WARNING: Energy == TotalEnergy — spacing is (1,1,1)!")
+            print("*** This means pyradiomics is not seeing real voxel spacing.")
+        else:
+            ratio = float(total_energy) / float(energy) if float(energy) != 0 else 0
+            print(f"\n  Sanity check: TotalEnergy / Energy = {ratio:.6f} (voxel volume)")
 
     # ------------------------------------------------------------------
     # Filter to the 128 desired features
@@ -321,8 +362,8 @@ def main():
 
     if missing:
         print(
-            f"\n[WARNING] {len(missing)} of 128 features were not found in "
-            f"pyradiomics output and were set to NaN:\n  {missing}"
+            f"\n[WARNING] {len(missing)} of 128 features not found in "
+            f"pyradiomics output (set to NaN):\n  {missing}"
         )
 
     # Save

@@ -60,6 +60,8 @@ def main():
 
     try:
         feature_df = get_features(temp_csv, weights_path=weights_path, spatial_size=(50, 50, 50))
+        drop_cols = [c for c in ["image_path", "coordX", "coordY", "coordZ"] if c in feature_df.columns]
+        feature_df = feature_df.drop(columns=drop_cols)
         os.makedirs(output_dir, exist_ok=True)
         feature_df.to_csv(os.path.join(output_dir, "FM_features.csv"), index=False)
     finally:

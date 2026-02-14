@@ -1,8 +1,8 @@
 import numpy as np
 import SimpleITK as sitk
 
-from utils.imageClass import ImageClass
-from utils.roiClass import RoiClass
+from .imageClass import ImageClass
+from .roiClass import RoiClass
 
 sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(4)
 

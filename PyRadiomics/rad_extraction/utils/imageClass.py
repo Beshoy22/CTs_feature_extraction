@@ -12,12 +12,12 @@ import numpy as np
 import pandas as pd
 from pydicom import Dataset, FileDataset, Sequence
 
-from utils.imageMetaData import (
+from .imageMetaData import (
     create_new_uid,
     get_pydicom_meta_tag,
     set_pydicom_meta_tag,
 )
-from utils.utilities import get_version
+from .utilities import get_version
 
 
 # Monolithic classes.....
@@ -278,7 +278,7 @@ class ImageClass:
 
     def interpolate(self, by_slice, settings):
         """Performs interpolation of the image volume"""
-        from utils.imageProcess import (  # aauker: Circular import
+        from .imageProcess import (  # aauker: Circular import
             gaussian_preprocess_filter,
             interpolate_to_new_grid,
         )

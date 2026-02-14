@@ -2,12 +2,12 @@ import logging
 
 import numpy as np
 
-from utils.imageProcess import (
+from .imageProcess import (
     crop_image,
     get_supervoxel_overlap,
     get_supervoxels,
 )
-from utils.utilities import extract_roi_names
+from .utilities import extract_roi_names
 
 
 def rotate_image(img_obj, settings=None, rot_angle=None, roi_list=None):
@@ -51,7 +51,7 @@ def randomise_roi_contours(img_obj, roi_list, settings):
 
     from scipy.ndimage import binary_closing
 
-    from utils.utilities import world_to_index
+    from .utilities import world_to_index
 
     new_roi_list = []
     svx_roi_list = []

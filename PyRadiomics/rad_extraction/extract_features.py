@@ -6,14 +6,14 @@ import numpy as np
 import pandas as pd
 from radiomics import featureextractor
 
-from utils.imageReaders import read_itk_image, read_itk_segmentation
-from utils.imageProcess import (
+from .utils.imageReaders import read_itk_image, read_itk_segmentation
+from .utils.imageProcess import (
     crop_image,
     interpolate_image,
     interpolate_roi,
     combine_all_rois,
 )
-from utils.importSettings import Settings
+from .utils.importSettings import Settings
 
 # ---------------------------------------------------------------------------
 # 128 desired radiomic features
@@ -175,8 +175,8 @@ def get_preprocessed_scan(image_path, seg_path):
         4. combine_all_rois
 
     Returns:
-        image_class_object : ImageClass — preprocessed CT volume
-        roi_combined       : RoiClass   — combined (non-perturbed) mask
+        image_class_object : ImageClass - preprocessed CT volume
+        roi_combined       : RoiClass   - combined (non-perturbed) mask
     """
     settings = Settings()
 

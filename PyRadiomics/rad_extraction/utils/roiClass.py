@@ -6,9 +6,9 @@ import pandas as pd
 from pydicom import FileDataset
 from scipy.stats import mstats
 
-from utils.imageClass import ImageClass
-from utils.imageMetaData import get_pydicom_meta_tag, set_pydicom_meta_tag
-from utils.imageProcess import (
+from .imageClass import ImageClass
+from .imageMetaData import get_pydicom_meta_tag, set_pydicom_meta_tag
+from .imageProcess import (
     gaussian_preprocess_filter,
     interpolate_to_new_grid,
 )

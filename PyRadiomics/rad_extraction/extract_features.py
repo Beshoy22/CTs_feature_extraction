@@ -1,12 +1,22 @@
 import os
 import argparse
+import tempfile
 import SimpleITK as sitk
 import numpy as np
 import pandas as pd
 from radiomics import featureextractor
 
+from utils.imageReaders import read_itk_image, read_itk_segmentation
+from utils.imageProcess import (
+    crop_image,
+    interpolate_image,
+    interpolate_roi,
+    combine_all_rois,
+)
+from utils.importSettings import Settings
+
 # ---------------------------------------------------------------------------
-# 128 desired radiomic features (subset of pyradiomics enableAll output)
+# 128 desired radiomic features
 # ---------------------------------------------------------------------------
 DESIRED_FEATURES = [
     "logarithm_firstorder_Energy",
@@ -142,25 +152,7 @@ DESIRED_FEATURES = [
 
 def extract_features(image, segmentation, pid):
     """
-    Extract radiomic features — identical to utils.i3lungRadiomics.extract_features.
-
-    Uses the default RadiomicsFeatureExtractor with all image types
-    (original, wavelet, LoG, square, squareroot, logarithm, exponential,
-    gradient, lbp-2D) and all feature classes enabled.
-
-    Parameters
-    ----------
-    image : str or sitk.Image
-        Path to the CT volume or a SimpleITK image object.
-    segmentation : str or sitk.Image
-        Path to the segmentation mask or a SimpleITK image object.
-    pid : str
-        Patient / subject identifier.
-
-    Returns
-    -------
-    dict
-        Dictionary of all extracted features plus ``patient_id``.
+    Identical to utils.i3lungRadiomics.extract_features.
     """
     extractor = featureextractor.RadiomicsFeatureExtractor()
     extractor.enableAllImageTypes()
@@ -171,32 +163,28 @@ def extract_features(image, segmentation, pid):
     return features
 
 
-def run_troubleshoot(image_path, seg_path, output_dir):
+def get_preprocessed_scan(image_path, seg_path):
     """
-    Run the same crop → interpolate pipeline used by the perturbation code
-    and save the intermediate volumes so they can be visually inspected.
+    Run the EXACT same preprocessing as get_perturbated_scans() in
+    i3lungRadiomics.py, but STOP before randomise_roi_contours.
 
-    This replicates the preprocessing inside ``get_perturbated_scans``
-    (i3lungRadiomics.py) WITHOUT the contour-randomisation step.
+    Pipeline:
+        1. read_itk_image  +  read_itk_segmentation
+        2. crop_image  (boundary=50.0, z_only=True)
+        3. interpolate_image  +  interpolate_roi
+        4. combine_all_rois
+
+    Returns:
+        image_class_object : ImageClass — preprocessed CT volume
+        roi_combined       : RoiClass   — combined (non-perturbed) mask
     """
-    # Lazy-import the MIRP utilities — they are only needed in troubleshoot
-    # mode and the user may not always have them on the PYTHONPATH.
-    from utils.imageReaders import read_itk_image, read_itk_segmentation
-    from utils.imageProcess import (
-        crop_image,
-        interpolate_image,
-        interpolate_roi,
-        combine_all_rois,
-    )
-    from utils.importSettings import Settings
-
     settings = Settings()
 
     # ---- Read ----
     ctscan_obj = read_itk_image(image_path, "CT")
     seg_obj = read_itk_segmentation(seg_path)
 
-    # ---- Crop (boundary=50 mm, z-only) — same as get_perturbated_scans ----
+    # ---- Crop (boundary=50 mm, z-only) ----
     image_class_object, roi_class_object_list = crop_image(
         img_obj=ctscan_obj,
         roi_list=seg_obj,
@@ -214,46 +202,21 @@ def run_troubleshoot(image_path, seg_path, output_dir):
         settings=settings,
     )
 
-    # ---- Combine ROIs (in case of multi-label segmentation) ----
-    roi_class_object = combine_all_rois(
+    # ---- Combine ROIs ----
+    roi_combined = combine_all_rois(
         roi_list=roi_class_object_list, settings=settings
     )
 
-    # ---- Save ----
-    ts_dir = os.path.join(output_dir, "troubleshoot")
-    os.makedirs(ts_dir, exist_ok=True)
-
-    # Save as SimpleITK images with spacing/origin preserved
-    cropped_vol = sitk.GetImageFromArray(image_class_object.voxel_grid)
-    cropped_vol.SetSpacing(image_class_object.spacing[::-1].tolist())
-    cropped_vol.SetOrigin(image_class_object.origin[::-1].tolist())
-
-    mask_array = roi_class_object.roi.get_voxel_grid().astype(np.uint8)
-    cropped_mask = sitk.GetImageFromArray(mask_array)
-    cropped_mask.SetSpacing(image_class_object.spacing[::-1].tolist())
-    cropped_mask.SetOrigin(image_class_object.origin[::-1].tolist())
-
-    vol_out = os.path.join(ts_dir, "preprocessed_volume.nrrd")
-    mask_out = os.path.join(ts_dir, "preprocessed_mask.nrrd")
-
-    sitk.WriteImage(cropped_vol, vol_out)
-    sitk.WriteImage(cropped_mask, mask_out)
-
-    print(f"[TROUBLESHOOT] Saved preprocessed volume → {vol_out}")
-    print(f"[TROUBLESHOOT] Saved preprocessed mask   → {mask_out}")
-    print(f"[TROUBLESHOOT] Volume shape : {image_class_object.voxel_grid.shape}")
-    print(f"[TROUBLESHOOT] Volume spacing: {image_class_object.spacing}")
-    print(f"[TROUBLESHOOT] Mask sum      : {mask_array.sum()}")
-
-    return ts_dir
+    return image_class_object, roi_combined
 
 
 def main():
     parser = argparse.ArgumentParser(
         description=(
             "Extract the 128 selected radiomic features from a CT volume "
-            "and segmentation mask.  Replicates the vanilla (non-perturbed) "
-            "extraction path of I3LUNG_march_2025_multi_thread.py exactly."
+            "and segmentation mask.  Follows the exact same preprocessing "
+            "pipeline as the I3LUNG perturbation code (crop -> interpolate -> "
+            "combine ROIs) but without contour randomisation."
         ),
     )
     parser.add_argument("--input_dir", default=".")
@@ -264,9 +227,8 @@ def main():
         "--troubleshoot",
         action="store_true",
         help=(
-            "Save the cropped + interpolated volume and mask produced by the "
-            "MIRP preprocessing pipeline (the same one used before perturbation) "
-            "into <output_dir>/troubleshoot/ for visual inspection."
+            "Save the cropped + interpolated volume and mask to "
+            "<output_dir>/troubleshoot/ for visual inspection."
         ),
     )
     args = parser.parse_args()
@@ -278,25 +240,76 @@ def main():
     seg_path = os.path.abspath(os.path.join(args.input_dir, args.seg))
 
     # ------------------------------------------------------------------
-    # Troubleshoot: save the preprocessed (crop + interpolate) volumes
-    # so the user can inspect them.  This does NOT affect feature values.
+    # Preprocessing — same pipeline as get_perturbated_scans()
+    # ------------------------------------------------------------------
+    print(f"Preprocessing:\n  image: {image_path}\n  seg  : {seg_path}")
+    image_class_object, roi_combined = get_preprocessed_scan(image_path, seg_path)
+
+    # ------------------------------------------------------------------
+    # Convert to SimpleITK the EXACT same way as save_pertrubated_scan_mask:
+    #
+    #     ctscan_img = sitk.GetImageFromArray(ctscan.voxel_grid)
+    #     mask_img   = sitk.GetImageFromArray(mask.roi.voxel_grid)
+    #
+    # This deliberately drops spacing/origin — pyradiomics will see
+    # default (1,1,1) spacing, which is what the perturbed path uses.
+    # ------------------------------------------------------------------
+    ctscan_img = sitk.GetImageFromArray(image_class_object.voxel_grid)
+    mask_img = sitk.GetImageFromArray(roi_combined.roi.voxel_grid)
+
+    # ------------------------------------------------------------------
+    # Save to temp files (same as save_pertrubated_scan_mask writes .nrrd)
+    # ------------------------------------------------------------------
+    tmp_dir = tempfile.mkdtemp()
+    volume_path = os.path.join(tmp_dir, "volume.nrrd")
+    mask_path = os.path.join(tmp_dir, "mask.nrrd")
+
+    sitk.WriteImage(ctscan_img, volume_path)
+    sitk.WriteImage(mask_img, mask_path)
+
+    # ------------------------------------------------------------------
+    # Troubleshoot — save copies for inspection
     # ------------------------------------------------------------------
     if args.troubleshoot:
-        run_troubleshoot(image_path, seg_path, output_dir)
+        ts_dir = os.path.join(output_dir, "troubleshoot")
+        os.makedirs(ts_dir, exist_ok=True)
+
+        # Files exactly as pyradiomics sees them (no spacing/origin)
+        sitk.WriteImage(ctscan_img, os.path.join(ts_dir, "volume_no_metadata.nrrd"))
+        sitk.WriteImage(mask_img, os.path.join(ts_dir, "mask_no_metadata.nrrd"))
+
+        # With real spacing/origin so you can overlay in a viewer
+        ctscan_img_meta = sitk.GetImageFromArray(image_class_object.voxel_grid)
+        ctscan_img_meta.SetSpacing(image_class_object.spacing[::-1].tolist())
+        ctscan_img_meta.SetOrigin(image_class_object.origin[::-1].tolist())
+
+        mask_array = roi_combined.roi.voxel_grid.astype(np.uint8)
+        mask_img_meta = sitk.GetImageFromArray(mask_array)
+        mask_img_meta.SetSpacing(image_class_object.spacing[::-1].tolist())
+        mask_img_meta.SetOrigin(image_class_object.origin[::-1].tolist())
+
+        sitk.WriteImage(ctscan_img_meta, os.path.join(ts_dir, "preprocessed_volume.nrrd"))
+        sitk.WriteImage(mask_img_meta, os.path.join(ts_dir, "preprocessed_mask.nrrd"))
+
+        print(f"[TROUBLESHOOT] Volume shape  : {image_class_object.voxel_grid.shape}")
+        print(f"[TROUBLESHOOT] Volume spacing : {image_class_object.spacing}")
+        print(f"[TROUBLESHOOT] Mask sum       : {mask_array.sum()}")
+        print(f"[TROUBLESHOOT] Saved to       : {ts_dir}")
 
     # ------------------------------------------------------------------
-    # Feature extraction — identical to extract_features_non_perturbed()
-    # in I3LUNG_march_2025_multi_thread.py.
-    #
-    # NOTE: the vanilla path passes the ORIGINAL image and segmentation
-    # directly to pyradiomics.  No crop, no interpolation, no binary
-    # mask thresholding.  This is exactly what the multi-thread script
-    # does for the "vanilla_" prefixed columns.
+    # Feature extraction — same as extract_features in the perturbed path
     # ------------------------------------------------------------------
-    print(f"Extracting features from:\n  image: {image_path}\n  seg  : {seg_path}")
-    all_features = extract_features(image_path, seg_path, pid="subject")
+    print("Extracting features ...")
+    all_features = extract_features(volume_path, mask_path, pid="subject")
 
+    # Clean up temp files
+    os.remove(volume_path)
+    os.remove(mask_path)
+    os.rmdir(tmp_dir)
+
+    # ------------------------------------------------------------------
     # Filter to the 128 desired features
+    # ------------------------------------------------------------------
     filtered = {"patient_id": all_features["patient_id"]}
     missing = []
     for feat in DESIRED_FEATURES:
@@ -316,7 +329,7 @@ def main():
     df = pd.DataFrame([filtered])
     out_csv = os.path.join(output_dir, "radiomics_features.csv")
     df.to_csv(out_csv, index=False)
-    print(f"\n[INFO] Saved {len(DESIRED_FEATURES)} features → {out_csv}")
+    print(f"\n[INFO] Saved {len(DESIRED_FEATURES)} features -> {out_csv}")
 
 
 if __name__ == "__main__":
